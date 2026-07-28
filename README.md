@@ -474,7 +474,7 @@ Dirección  : Código Hex  # Mnemónico Traducido
   - `$15` debe valer `1`
 
 ## Conclusiones:
-Fallo documentado. Tras la actualización del simulador se confirmó una advertencia del manual oficial: la instrucción `ANDI` está severamente bugueada. Al realizar `ANDI  $13, $12, 0x0F`, en lugar de aplicar la máscara lógica de bits (AND), el simulador parece ejecutar un `ORI` o cargar directamente el operando inmediato ignorando el registro fuente. Debido a este fallo encadenado, los valores matemáticos de la prueba en `$13` y `$14` no fueron los esperados. El resto de las instrucciones lógicas funcionó, pero `ANDI` se reporta como inoperativa para su propósito real.
+Fallo documentado. Tras la última actualización del simulador se comprobó que el bug oficial de `ANDI` fue solucionado (ahora enmascara correctamente retornando 0 al operar contra 0), pero insólitamente se rompió la instrucción `ADD`. Al realizar `ADD $12, $10, $11` (10 + 20), el registro `$12` devolvió `0x00` en lugar de `30`. Sospechamos que la ALU está aplicando internamente una compuerta `AND` (10 AND 20 = 0) o simplemente fallando al sumar. El resto de las instrucciones lógicas (`XORI`, `SLTIU`) funcionó a la perfección.
 
 ---
 
@@ -759,3 +759,68 @@ set [0x00000800] 0x00000021
 
 ## Conclusiones:
 Fallo documentado (Persistente). Al igual que con los registros especiales, se corroboró empíricamente que en la nueva versión el procesador sigue ignorando por completo la instrucción de excepción (TRAP). En lugar de resguardar el contexto (`EPC`) y saltar al vector de la dirección `0x0800`, el `PC` simplemente continuó de largo hacia las siguientes direcciones de memoria sin levantar errores ni excepciones, comportándose como un NOP e ignorando el llamado a interrupción. Se documenta la prueba para constancia y se excluye de las capacidades estables del microprocesador.
+
+# Tarea 2: ROM de Booteo y Código Mínimo
+
+## Descripción
+En esta segunda parte del trabajo práctico, se diseña una pequeña ROM de booteo (Bootloader) para la CPU STX4. 
+El simulador inicializa el `PC` (Program Counter) en `0xF0000000` tras un reinicio del sistema. Nuestro objetivo es inyectar un código de inicialización en esa dirección que prepare el entorno básico (puntero de pila y puntero global) antes de saltar al espacio de memoria del usuario (`0x00000000`) para ejecutar el código principal.
+
+## Instrucciones de la ROM
+- Inicializar Stack Pointer (`$sp` / `$29`) apuntando a la dirección `0x1000`.
+- Inicializar Global Pointer (`$gp` / `$28`) apuntando a la dirección `0x0800`.
+- Realizar un salto incondicional (`J`) a la dirección base `0x00000000`.
+
+## Código de Usuario (Mínimo)
+- Cargar un valor de prueba (ej. `42`) en un registro (`$10`) para comprobar que el salto fue exitoso.
+- Entrar en un loop infinito (`J` a sí mismo) para evitar que la CPU lea basura en las siguientes direcciones de memoria.
+
+## Precondiciones
+- Reiniciar la CPU (`reset`).
+- **Importante:** NO se debe alterar manualmente el PC. Dejar que arranque desde `0xF0000000`.
+
+**Comandos del Debugger (Telnet):**
+```bash
+reset
+
+# --- ROM BOOTLOADER (Memoria del Sistema) ---
+set [0xF0000000] 0x083A1000
+set [0xF0000004] 0x08380800
+set [0xF0000008] 0x10000000
+
+# --- CÓDIGO DE USUARIO (Memoria Base) ---
+set [0x00000000] 0x0814002A
+set [0x00000004] 0x10000001
+```
+
+## Code
+**Ensamblador MIPS/STX4:**
+```mips
+# ROM EN 0xF0000000
+ADDI $29, $0, 4096    # $sp = 4096 (0x1000)
+ADDI $28, $0, 2048    # $gp = 2048 (0x0800)
+J    0x00000000       # Salto incondicional al inicio del código de usuario
+
+# USER CODE EN 0x00000000
+ADDI $10, $0, 42      # $10 = 42 (0x2A). Operación de prueba.
+J    0x00000004       # Loop infinito (salta a su propia dirección, offset 1 palabra).
+```
+
+**Tabla de Referencia (Código Máquina):**
+```text
+Dirección  : Código Hex  # Mnemónico Traducido
+0xF0000000 : 0x083A1000  # ADDI $29, $0, 4096
+0xF0000004 : 0x08380800  # ADDI $28, $0, 2048
+0xF0000008 : 0x10000000  # J    0x00000000
+...
+0x00000000 : 0x0814002A  # ADDI $10, $0, 42
+0x00000004 : 0x10000001  # J    0x00000004
+```
+
+## Postcondiciones
+- Avanzar 5 ciclos con `step 5`. Esto ejecutará las 3 instrucciones de la ROM, el salto, la instrucción de usuario, y caerá en el loop infinito.
+- Revisar registros:
+  - `$29` (`$sp`) debe valer `0x00001000`.
+  - `$28` (`$gp`) debe valer `0x00000800`.
+  - `$10` debe valer `0x0000002A` (42).
+  - El `$pc` debe quedarse bloqueado repitiéndose en `0x00000004`.

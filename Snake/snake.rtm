@@ -1,0 +1,449 @@
+
+.section ".data"
+snake_x: .pad 400
+snake_y: .pad 400
+head_ptr: .word 0
+tail_ptr: .word 0
+snake_len: .word 3
+apple_x: .word 10
+apple_y: .word 10
+prng_seed: .word 123456789
+direction: .word 2 // 1:Up, 2:Right, 3:Down, 4:Left
+clear_scr: .asciiz "\x1b[2J\x1b[H"
+
+.section ".text"
+init:
+    // Setup environment
+    addi $sp, $zero, 0x1000
+    addi $gp, $zero, 0x0800
+    addi $s7, $zero, -0x100 // $s7 = Console TX (0xFFFFFF00)
+
+    // Init snake coords
+    orh $t0, $zero, .hi16 snake_x
+    ori $t0, $t0, .lo16 snake_x
+    addi $t1, $zero, 5
+    sw $t1, 0($t0)
+    
+    orh $t0, $zero, .hi16 snake_y
+    ori $t0, $t0, .lo16 snake_y
+    addi $t1, $zero, 5
+    sw $t1, 0($t0)
+    
+    // Clear screen
+    orh $a0, $zero, .hi16 clear_scr
+    ori $a0, $a0, .lo16 clear_scr
+    jal print_str
+
+game_loop:
+    // Delay (simple busy wait)
+    orh $t0, $zero, 0x0002 // Reduced delay for testing
+    ori $t0, $t0, 0x0000
+delay_loop:
+    addi $t0, $t0, -1
+    bne $t0, $zero, delay_loop
+
+    // Decide direction (AI)
+    jal decide_direction
+    
+    // Move snake
+    jal move_snake
+    
+    // Check collisions
+    jal check_collisions
+    bne $a4, $zero, game_over
+    
+    // Check apple
+    jal check_apple
+    
+    // Draw frame
+    jal draw_frame
+    
+    j game_loop
+
+game_over:
+    j game_over
+
+
+// ----------------------------------------------------
+// AI Subroutine
+// Sets optimal direction in memory (1=Up, 2=Right, 3=Down, 4=Left)
+// ----------------------------------------------------
+decide_direction:
+    addi $sp, $sp, -4
+    sw $ra, 0($sp)
+    
+    // Get head pos
+    orh $t0, $zero, .hi16 head_ptr
+    ori $t0, $t0, .lo16 head_ptr
+    lw $t1, 0($t0)
+    sll $t1, $t1, 2
+    
+    orh $t0, $zero, .hi16 snake_x
+    ori $t0, $t0, .lo16 snake_x
+    add $t0, $t0, $t1
+    lw $s2, 0($t0) // head_x in $s2
+    
+    orh $t0, $zero, .hi16 snake_y
+    ori $t0, $t0, .lo16 snake_y
+    add $t0, $t0, $t1
+    lw $s3, 0($t0) // head_y in $s3
+
+    // Get apple pos
+    orh $t0, $zero, .hi16 apple_x
+    ori $t0, $t0, .lo16 apple_x
+    lw $a2, 0($t0) // apple_x in $a2
+    
+    orh $t0, $zero, .hi16 apple_y
+    ori $t0, $t0, .lo16 apple_y
+    lw $a3, 0($t0) // apple_y in $a3
+
+    sub $t4, $a2, $s2 // dx = apple_x - head_x
+    sub $t5, $a3, $s3 // dy = apple_y - head_y
+    
+    // Greedy horizontal
+    beq $t4, $zero, try_y
+    slt $at, $t4, $zero
+    bne $at, $zero, go_left
+    addi $a4, $zero, 2
+    j save_dir
+go_left:
+    addi $a4, $zero, 4
+    j save_dir
+
+try_y:
+    beq $t5, $zero, no_move
+    slt $at, $t5, $zero
+    bne $at, $zero, go_up
+    addi $a4, $zero, 3
+    j save_dir
+go_up:
+    addi $a4, $zero, 1
+    j save_dir
+
+no_move:
+    addi $a4, $zero, 2 // Default
+
+save_dir:
+    orh $t0, $zero, .hi16 direction
+    ori $t0, $t0, .lo16 direction
+    sw $a4, 0($t0)
+    
+    lw $ra, 0($sp)
+    addi $sp, $sp, 4
+    jr $ra, 0
+
+
+// ----------------------------------------------------
+// Move Snake
+// ----------------------------------------------------
+move_snake:
+    addi $sp, $sp, -4
+    sw $ra, 0($sp)
+    
+    orh $t0, $zero, .hi16 head_ptr
+    ori $t0, $t0, .lo16 head_ptr
+    lw $t1, 0($t0) // $t1 = old head_ptr
+    
+    // old head coords
+    sll $t2, $t1, 2
+    orh $t3, $zero, .hi16 snake_x
+    ori $t3, $t3, .lo16 snake_x
+    add $t3, $t3, $t2
+    lw $a0, 0($t3) // old_x
+    
+    orh $t4, $zero, .hi16 snake_y
+    ori $t4, $t4, .lo16 snake_y
+    add $t4, $t4, $t2
+    lw $a1, 0($t4) // old_y
+    
+    // advance head_ptr (circular 0-99)
+    addi $t1, $t1, 1
+    slti $at, $t1, 100
+    bne $at, $zero, update_head
+    addi $t1, $zero, 0
+update_head:
+    sw $t1, 0($t0) // save new head_ptr
+    
+    // new head offset
+    sll $t2, $t1, 2
+    orh $t3, $zero, .hi16 snake_x
+    ori $t3, $t3, .lo16 snake_x
+    add $t3, $t3, $t2
+    
+    orh $t4, $zero, .hi16 snake_y
+    ori $t4, $t4, .lo16 snake_y
+    add $t4, $t4, $t2
+    
+    // read direction
+    orh $t5, $zero, .hi16 direction
+    ori $t5, $t5, .lo16 direction
+    lw $s0, 0($t5)
+    
+    addi $at, $zero, 1
+    beq $s0, $at, move_up
+    addi $at, $zero, 2
+    beq $s0, $at, move_right
+    addi $at, $zero, 3
+    beq $s0, $at, move_down
+    addi $at, $zero, 4
+    beq $s0, $at, move_left
+
+move_up:
+    addi $a1, $a1, -1
+    j save_new_pos
+move_right:
+    addi $a0, $a0, 1
+    j save_new_pos
+move_down:
+    addi $a1, $a1, 1
+    j save_new_pos
+move_left:
+    addi $a0, $a0, -1
+
+save_new_pos:
+    sw $a0, 0($t3)
+    sw $a1, 0($t4)
+
+    lw $ra, 0($sp)
+    addi $sp, $sp, 4
+    jr $ra, 0
+
+
+// ----------------------------------------------------
+// Check Collisions
+// Returns $a4 = 1 if dead
+// ----------------------------------------------------
+check_collisions:
+    // Get head
+    orh $t0, $zero, .hi16 head_ptr
+    ori $t0, $t0, .lo16 head_ptr
+    lw $t1, 0($t0)
+    sll $t1, $t1, 2
+    
+    orh $t0, $zero, .hi16 snake_x
+    ori $t0, $t0, .lo16 snake_x
+    add $t0, $t0, $t1
+    lw $s2, 0($t0) // x
+    
+    orh $t0, $zero, .hi16 snake_y
+    ori $t0, $t0, .lo16 snake_y
+    add $t0, $t0, $t1
+    lw $s3, 0($t0) // y
+    
+    // Check walls (1 <= X <= 40, 1 <= Y <= 20)
+    slti $at, $s2, 1
+    bne $at, $zero, is_dead
+    slti $at, $s3, 1
+    bne $at, $zero, is_dead
+    
+    slti $at, $s2, 41
+    beq $at, $zero, is_dead
+    slti $at, $s3, 21
+    beq $at, $zero, is_dead
+    
+    addi $a4, $zero, 0
+    jr $ra, 0
+    
+is_dead:
+    addi $a4, $zero, 1
+    jr $ra, 0
+
+
+// ----------------------------------------------------
+// Check Apple
+// ----------------------------------------------------
+check_apple:
+    // Get head
+    orh $t0, $zero, .hi16 head_ptr
+    ori $t0, $t0, .lo16 head_ptr
+    lw $t1, 0($t0)
+    sll $t1, $t1, 2
+    
+    orh $t0, $zero, .hi16 snake_x
+    ori $t0, $t0, .lo16 snake_x
+    add $t0, $t0, $t1
+    lw $s2, 0($t0) // head_x
+    
+    orh $t0, $zero, .hi16 snake_y
+    ori $t0, $t0, .lo16 snake_y
+    add $t0, $t0, $t1
+    lw $s3, 0($t0) // head_y
+    
+    // Get apple
+    orh $t0, $zero, .hi16 apple_x
+    ori $t0, $t0, .lo16 apple_x
+    lw $a2, 0($t0) // apple_x
+    
+    orh $t0, $zero, .hi16 apple_y
+    ori $t0, $t0, .lo16 apple_y
+    lw $a3, 0($t0) // apple_y
+    
+    bne $s2, $a2, move_tail
+    bne $s3, $a3, move_tail
+    
+    // Eaten! Increase length
+    orh $t0, $zero, .hi16 snake_len
+    ori $t0, $t0, .lo16 snake_len
+    lw $t1, 0($t0)
+    addi $t1, $t1, 1
+    sw $t1, 0($t0)
+    
+    // Generate new apple (dummy values)
+    addi $a2, $a2, 2
+    slti $at, $a2, 38
+    bne $at, $zero, skip_wrap_x
+    addi $a2, $zero, 2
+skip_wrap_x:
+    orh $t0, $zero, .hi16 apple_x
+    ori $t0, $t0, .lo16 apple_x
+    sw $a2, 0($t0)
+    
+    jr $ra, 0
+
+move_tail:
+    // Erase tail visual
+    addi $sp, $sp, -4
+    sw $ra, 0($sp)
+
+    orh $t0, $zero, .hi16 tail_ptr
+    ori $t0, $t0, .lo16 tail_ptr
+    lw $t1, 0($t0)
+    sll $t2, $t1, 2
+    
+    orh $t3, $zero, .hi16 snake_x
+    ori $t3, $t3, .lo16 snake_x
+    add $t3, $t3, $t2
+    lw $a0, 0($t3)
+    
+    orh $t4, $zero, .hi16 snake_y
+    ori $t4, $t4, .lo16 snake_y
+    add $t4, $t4, $t2
+    lw $a1, 0($t4)
+    
+    jal move_cursor
+    addi $t0, $zero, 32 // ' '
+    sb $t0, 0($s7)
+
+    // Advance tail pointer
+    orh $t0, $zero, .hi16 tail_ptr
+    ori $t0, $t0, .lo16 tail_ptr
+    lw $t1, 0($t0)
+    addi $t1, $t1, 1
+    slti $at, $t1, 100
+    bne $at, $zero, update_tail
+    addi $t1, $zero, 0
+update_tail:
+    sw $t1, 0($t0)
+    
+    lw $ra, 0($sp)
+    addi $sp, $sp, 4
+    jr $ra, 0
+
+
+// ----------------------------------------------------
+// Draw Frame
+// ----------------------------------------------------
+draw_frame:
+    addi $sp, $sp, -4
+    sw $ra, 0($sp)
+    
+    // Print apple
+    orh $t0, $zero, .hi16 apple_x
+    ori $t0, $t0, .lo16 apple_x
+    lw $a0, 0($t0)
+    orh $t0, $zero, .hi16 apple_y
+    ori $t0, $t0, .lo16 apple_y
+    lw $a1, 0($t0)
+    jal move_cursor
+    addi $t0, $zero, 64 // '@'
+    sb $t0, 0($s7)
+    
+    // Print Head
+    orh $t0, $zero, .hi16 head_ptr
+    ori $t0, $t0, .lo16 head_ptr
+    lw $t1, 0($t0)
+    sll $t1, $t1, 2
+    orh $t0, $zero, .hi16 snake_x
+    ori $t0, $t0, .lo16 snake_x
+    add $t0, $t0, $t1
+    lw $a0, 0($t0)
+    orh $t0, $zero, .hi16 snake_y
+    ori $t0, $t0, .lo16 snake_y
+    add $t0, $t0, $t1
+    lw $a1, 0($t0)
+    jal move_cursor
+    addi $t0, $zero, 79 // 'O'
+    sb $t0, 0($s7)
+    
+    lw $ra, 0($sp)
+    addi $sp, $sp, 4
+    jr $ra, 0
+
+
+// ----------------------------------------------------
+// Print String (address in $a0)
+// ----------------------------------------------------
+print_str:
+    add $t0, $a0, $zero
+print_str_loop:
+    lbu $t1, 0($t0)
+    beq $t1, $zero, print_str_end
+    sb $t1, 0($s7)
+    addi $t0, $t0, 1
+    j print_str_loop
+print_str_end:
+    jr $ra, 0
+
+
+// ----------------------------------------------------
+// Move Cursor ANSI: [Y;XH
+// $a0 = X, $a1 = Y
+// ----------------------------------------------------
+move_cursor:
+    addi $sp, $sp, -12
+    sw $ra, 0($sp)
+    sw $a0, 4($sp)
+    sw $a1, 8($sp)
+    
+    addi $t0, $zero, 27 // ESC
+    sb $t0, 0($s7)
+    addi $t0, $zero, 91 // '['
+    sb $t0, 0($s7)
+    
+    lw $a0, 8($sp) // Y
+    jal print_num
+    
+    addi $t0, $zero, 59 // ';'
+    sb $t0, 0($s7)
+    
+    lw $a0, 4($sp) // X
+    jal print_num
+    
+    addi $t0, $zero, 72 // 'H'
+    sb $t0, 0($s7)
+    
+    lw $ra, 0($sp)
+    addi $sp, $sp, 12
+    jr $ra, 0
+
+
+// ----------------------------------------------------
+// Print Num ($a0 < 100)
+// ----------------------------------------------------
+print_num:
+    add $t0, $a0, $zero
+    add $t1, $zero, $zero
+pn_loop:
+    slti $at, $t0, 10
+    bne $at, $zero, pn_end
+    addi $t0, $t0, -10
+    addi $t1, $t1, 1
+    j pn_loop
+pn_end:
+    beq $t1, $zero, pn_ones
+    addi $t1, $t1, 48 // Tens
+    sb $t1, 0($s7)
+pn_ones:
+    addi $t0, $t0, 48 // Ones
+    sb $t0, 0($s7)
+    jr $ra, 0
